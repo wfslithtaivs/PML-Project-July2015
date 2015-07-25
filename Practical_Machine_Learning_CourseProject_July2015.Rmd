@@ -1,0 +1,186 @@
+---
+title: "Practical Machine Learning, Project July 2015"
+author: "Kate Sergeeva"
+output: html_document
+---
+
+## Loading data
+
+```{r, cache =TRUE}
+train <- read.csv(file = "/Users/macbookpro/Downloads/pml-training.csv",
+                  header = TRUE, sep = ",")
+test <- read.csv(file = "/Users/macbookpro/Downloads/pml-testing.csv",
+                 header = TRUE, sep = ",")
+```
+
+## Quick summary
+```{r}
+str(train)
+```
+
+## Cleaning data
+
+### Removing meaningless variables
+
+```{r}
+modelTrain <- subset(train, select = -c(user_name, raw_timestamp_part_1, raw_timestamp_part_2,
+                                        cvtd_timestamp, new_window, num_window, X))
+```
+
+### Handling missing values
+```{r}
+modelTrain[modelTrain == ""] <- NA
+modelTrain[modelTrain == "#DIV/0!"] <- NA
+
+# Lookup for NA columns 
+naVars <- data.frame(apply(modelTrain, 2, function(x) {sum(is.na(x))}))
+naVars$toRemove <- apply(naVars, 1, function(y) {y == length(modelTrain[, 1])})
+columnsToExclude <- rownames(naVars[naVars$toRemove == "TRUE", ])
+columnsToExclude
+
+# Remove empty predictors
+modelTrain <- subset(modelTrain, select = -c(kurtosis_yaw_belt, skewness_yaw_belt, 
+                                             kurtosis_yaw_dumbbell, skewness_yaw_dumbbell, 
+                                             kurtosis_yaw_forearm, skewness_yaw_forearm ))
+```
+
+### Make up column classes 
+```{r}
+# Convert character columns into numeric
+library(taRifx)
+modelTrain <- japply(modelTrain, which(sapply(modelTrain, class)=="character"),as.integer)
+modelTrain <- japply(modelTrain, which(sapply(modelTrain, class)=="integer"),as.integer)
+modelTrain <- japply(modelTrain, which(sapply(modelTrain, class)=="factor"),as.integer)
+
+# Convert classe to factor
+modelTrain$classe <- as.factor(modelTrain$classe)
+
+```
+
+## Checking inner correlations between predictors
+
+```{r}
+#descrCor <- cor(subset(modelTrain, select = -classe))
+#out <- which(abs(descrCor) > 0.80, arr.ind=TRUE)
+#out[out[,1] > out[,2]]
+#out
+```
+
+## Subsetting data for cross-validation
+```{r}
+library(caret)
+inTrain <- createDataPartition(y = modelTrain$classe, p = 0.7, list = FALSE)
+training <- modelTrain[inTrain, ] 
+testing <- modelTrain[-inTrain, ]
+dim(training); dim(testing)
+```
+
+## Predicting with trees
+```{r, cache=TRUE}
+# Do parallel 
+library(doParallel)
+registerDoParallel(cores=4)
+
+
+#treeFit <- train(classe ~. , method = "rpart", data = training, na.action = na.pass)
+#print(treeFit$finalModel)
+#sum(testing$classe == predict(treeFit, newdata = testing, na.action = na.pass))/length(testing$classe)
+
+library(caret)
+set.seed(33243)
+foldsTrain <- createFolds(y = modelTrain$classe, k = 10, list = TRUE, returnTrain = TRUE)
+foldsTest <- createFolds(y = modelTrain$classe, k = 10, list = TRUE, returnTrain = FALSE)
+sapply(foldsTrain, length)
+
+
+library(e1071)
+training2 <- training
+training2[is.na(training2)] <- 0
+testing2 <- testing
+testing2[is.na(testing2)] <- 0
+
+library(caret)
+model <- train(classe ~ ., method = "rpart", data = training2, na.action = na.pass)
+model2 <- train(classe ~ ., method = "rf", data = training2, na.action = na.pass)
+
+print(model$finalModel)
+pred <- predict(model, newdata = subset(testing2, select = -classe))
+table(pred, testing2$classe)
+length(pred); length(testing2$classe)
+
+colAn <- data.frame(colMeans(subset(training2, select = -classe)))
+colAn2 <- data.frame(colSums(subset(training2, select = -classe) != 0))
+colAn3 <- data.frame(colSums(subset(training2, select = -classe) == 0))
+which(colAn3[, 1] > 13000)
+
+plot(colAn[, 1], type = "l")
+plot(colAn2[, 1], type = "l")
+plot(colAn3[, 1], type = "l")
+
+indexArr <- which(colAn3[, 1] > 13000)
+trainRed <- training2[, - which(colAn3[, 1] > 13000)] 
+testRed <- testing2[, - which(colAn3[, 1] > 13000)] 
+names(trainRed)
+
+model3Red <- train(classe ~ ., method = "rf", data = trainRed, na.action = na.pass)
+print(model3Red$finalModel)
+
+pred <- predict(model3Red, newdata = subset(testRed, select = -classe))
+predTrain <- predict(model3Red, newdata = subset(trainRed, select = -classe))
+
+confusionMatrix(predTrain,trainRed$classe)
+confusionMatrix(pred,testRed$classe)
+testRed$predRight <- pred == testRed$classe
+
+qplot(pred, testRed$classe, colour = testRed$predRight, main = "testRed RF Prediction") + 
+        geom_jitter(aes(colour = testRed$predRight))
+
+
+plot(model3Red$finalModel, log="y")
+importance(model3Red$finalModel)
+varImpPlot(model3Red$finalModel)
+
+par(mfrow = c(1,2))
+plot(pred)
+plot(testRed$classe)
+sum(pred == testRed$classe)/length(testRed$classe)
+
+model3Redsimple <- train(classe ~ ., method = "rpart", data = trainRed, na.action = na.pass)
+predSimple <- predict(model3Redsimple, newdata = subset(testRed, select = -classe))
+plot(predSimple, testRed$classe)
+confusionMatrix(predSimple,testRed$classe)
+par(mfrow = c(1,2))
+plot(predSimple)
+plot(testRed$classe)
+sum(predSimple == testRed$classe)/length(testRed$classe)
+
+
+#=========try prediction==========
+testTry <- test
+# reproduce data transformations
+testTry <- subset(testTry, select = -c(user_name, raw_timestamp_part_1, raw_timestamp_part_2,
+                                        cvtd_timestamp, new_window, num_window, X))
+
+testTry[testTry == ""] <- NA
+testTry[testTry == "#DIV/0!"] <- NA
+testTry <- subset(testTry, select = -c(kurtosis_yaw_belt, skewness_yaw_belt, 
+                                             kurtosis_yaw_dumbbell, skewness_yaw_dumbbell, 
+                                             kurtosis_yaw_forearm, skewness_yaw_forearm ))
+library(taRifx)
+testTry <- japply(testTry, which(sapply(testTry, class)=="character"),as.integer)
+testTry <- japply(testTry, which(sapply(testTry, class)=="integer"),as.integer)
+testTry <- japply(testTry, which(sapply(testTry, class)=="factor"),as.integer)
+
+# NAs to zeros
+testTry[is.na(testTry)] <- 0
+
+# Convert classe to factor
+
+testTry <- testTry[ , - which(colAn3[, 1] > 13000)] # 53 var (without classe!)
+predTestTry <- predict(model3Red, testTry)
+plot(predTestTry)
+
+
+
+
+```
